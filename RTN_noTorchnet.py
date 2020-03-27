@@ -105,9 +105,7 @@ if __name__ == "__main__":
     Accuracy_list = []
 
     for epoch in range(50):
-
         running_loss = 0.0
-
         for i, data in enumerate(trainloader, 0):
             inputs, labels = data['signal'], data['label']
 
