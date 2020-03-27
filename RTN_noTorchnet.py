@@ -104,7 +104,7 @@ if __name__ == "__main__":
     Loss_list = []
     Accuracy_list = []
 
-    for epoch in range(50):
+    for epoch in range(NUM_EPOCHS):
         running_loss = 0.0
         for i, data in enumerate(trainloader, 0):
             inputs, labels = data['signal'], data['label']
