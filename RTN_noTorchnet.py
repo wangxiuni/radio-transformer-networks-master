@@ -1,13 +1,15 @@
 import torch
 from torch import nn
 from torch.utils.data import Dataset, DataLoader
-
-NUM_EPOCHS = 40
+import math
+NUM_EPOCHS = 17
 BATCH_SIZE = 256
 CHANNEL_SIZE = 4
 USE_CUDA = True
-DOUBLE_N = 14
+DOUBLE_N = 7
 M = 2**CHANNEL_SIZE
+# bit / channel_use
+communication_rate = 4/7
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -21,6 +23,7 @@ class RadioTransformerNetwork(nn.Module):
             nn.Linear(in_channels, in_channels),
             nn.ReLU(inplace=True),
             nn.Linear(in_channels, compressed_dim),
+            nn.BatchNorm1d(compressed_dim)
         )
 
         self.decoder = nn.Sequential(
@@ -33,16 +36,13 @@ class RadioTransformerNetwork(nn.Module):
         x = self.encoder(x)
 
         # Normalization.
-        x = (self.in_channels ** 2) * (x / x.norm(dim=-1)[:, None])
+        #x = (self.in_channels ** 2) * (x / x.norm(dim=-1)[:, None])
 
         # 7dBW to SNR.
         training_signal_noise_ratio = 5.01187
 
-        # bit / channel_use
-        communication_rate = 4/7
-
         # Simulated Gaussian noise.
-        noise = torch.autograd.Variable(torch.randn(*x.size()) / ((2 * communication_rate * training_signal_noise_ratio) ** 0.5))
+        noise = torch.autograd.Variable(torch.randn(*x.size()) / math.sqrt(2 * communication_rate * training_signal_noise_ratio))
         if USE_CUDA: noise = noise.cuda()
         x += noise
 
@@ -50,6 +50,43 @@ class RadioTransformerNetwork(nn.Module):
 
         return x
 
+
+class Encoder(nn.Module):
+    def __init__(self,in_channels, compressed_dim):
+        super(Encoder, self).__init__()
+
+        self.in_channels = in_channels
+
+        self.encoder = nn.Sequential(
+            nn.Linear(in_channels, in_channels),
+            nn.ReLU(inplace=True),
+            nn.Linear(in_channels, compressed_dim),
+            nn.BatchNorm1d(compressed_dim)
+        )
+
+
+    def forward(self, x):
+        x = self.encoder(x)
+
+        # Normalization.
+        #x = (self.in_channels ** 2) * (x / x.norm(dim=-1)[:, None])
+
+        return x
+
+
+class Decoder(nn.Module):
+    def __init__(self, in_channels, compressed_dim):
+        super(Decoder, self).__init__()
+        self.decoder = nn.Sequential(
+            nn.Linear(compressed_dim, compressed_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(compressed_dim, in_channels)
+        )
+
+    def forward(self, x):
+        x = self.decoder(x)
+
+        return x
 
 class TensorDataset(Dataset):
 
@@ -80,6 +117,7 @@ class TensorDataset(Dataset):
         return sample
 
 if __name__ == "__main__":
+    import numpy as np
     import torch.optim as optim
     model = RadioTransformerNetwork(M, compressed_dim=DOUBLE_N)
     if USE_CUDA: model = model.cuda()
@@ -87,7 +125,7 @@ if __name__ == "__main__":
     train_labels = (torch.rand(10000) * M).long()
     train_data = torch.sparse.torch.eye(M).index_select(dim=0, index=train_labels)
 
-    test_labels = (torch.rand(1500) * M).long()
+    test_labels = (torch.rand(45000) * M).long()
     test_data = torch.sparse.torch.eye(M).index_select(dim=0, index=test_labels)
 
     optimizer = optim.Adam(model.parameters())
@@ -159,9 +197,58 @@ if __name__ == "__main__":
                 label = labels[i]
                 class_correct[label] += c[i].item()
                 class_total[label] += 1
-                if c[i].item() != True:
-                    print(label, predicted[i])
 
     for i in range(M):
         print('Accuracy of %5s : %2d %2d ' % (
             i, class_correct[i], class_total[i]))
+
+    PATH = './E2E.pth'
+    torch.save(model.state_dict(), PATH)
+
+    encoder = Encoder(M, DOUBLE_N)
+    encoder.load_state_dict(torch.load(PATH), strict=False)
+    #encoder.cuda()
+
+    decoder = Decoder(M, DOUBLE_N)
+    decoder.load_state_dict(torch.load(PATH), strict=False)
+    #decoder.cuda()
+
+    EbNodB_range = list(i for i in np.arange(-4.0, 8.5, 0.5))
+    #print(EbNodB_range)
+    ber = [None] * len(EbNodB_range)
+
+    for n in range(len(EbNodB_range)):
+        EbNo = 10.0 ** (EbNodB_range[n] / 10.0)
+        noise_std = np.sqrt(1 / (2 * communication_rate * EbNo))
+        all_errors = 0
+        with torch.no_grad():
+            for data in testloader:
+                inputs, labels = data['signal'], data['label']
+
+                encoded_signal = encoder(inputs)
+                noise = torch.autograd.Variable(torch.randn(*encoded_signal.size()) / ((2 * communication_rate *EbNo) ** 0.5))
+                #print(encoded_signal.shape, len(noise))
+                final_signal = encoded_signal + noise
+                final_signal = final_signal.float()
+                #print(encoded_signal, final_signal)
+                #print(final_signal.dtype)
+                _, outputs = torch.max(decoder(final_signal), 1)
+                errors = (outputs != labels)
+                errors = errors.numpy().sum()
+                all_errors += errors
+
+        ber[n] = all_errors/45000
+        print("SNR:", EbNodB_range[n], "BER:", ber[n])
+
+    import matplotlib.pyplot as plt
+
+    plt.plot(EbNodB_range, ber, 'bo', label='Autoencoder(7,4)')
+    # plt.plot(list(EbNodB_range), ber_theory, 'ro-',label='BPSK BER')
+    plt.yscale('log')
+    plt.xlabel('SNR Range')
+    plt.ylabel('Block Error Rate')
+    plt.grid()
+    plt.legend(loc='upper right', ncol=1)
+
+    plt.savefig('AutoEncoder_7_4_BER_matplotlib')
+    plt.show()
