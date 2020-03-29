@@ -2,10 +2,12 @@ import torch
 from torch import nn
 from torch.utils.data import Dataset, DataLoader
 
-NUM_EPOCHS = 100
+NUM_EPOCHS = 40
 BATCH_SIZE = 256
 CHANNEL_SIZE = 4
 USE_CUDA = True
+DOUBLE_N = 14
+M = 2**CHANNEL_SIZE
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -37,7 +39,7 @@ class RadioTransformerNetwork(nn.Module):
         training_signal_noise_ratio = 5.01187
 
         # bit / channel_use
-        communication_rate = 1
+        communication_rate = 4/7
 
         # Simulated Gaussian noise.
         noise = torch.autograd.Variable(torch.randn(*x.size()) / ((2 * communication_rate * training_signal_noise_ratio) ** 0.5))
@@ -78,16 +80,15 @@ class TensorDataset(Dataset):
         return sample
 
 if __name__ == "__main__":
-    import math
     import torch.optim as optim
-    model = RadioTransformerNetwork(CHANNEL_SIZE, compressed_dim=int(math.log2(CHANNEL_SIZE)))
+    model = RadioTransformerNetwork(M, compressed_dim=DOUBLE_N)
     if USE_CUDA: model = model.cuda()
 
-    train_labels = (torch.rand(10000) * CHANNEL_SIZE).long()
-    train_data = torch.sparse.torch.eye(CHANNEL_SIZE).index_select(dim=0, index=train_labels)
+    train_labels = (torch.rand(10000) * M).long()
+    train_data = torch.sparse.torch.eye(M).index_select(dim=0, index=train_labels)
 
-    test_labels = (torch.rand(1500) * CHANNEL_SIZE).long()
-    test_data = torch.sparse.torch.eye(CHANNEL_SIZE).index_select(dim=0, index=test_labels)
+    test_labels = (torch.rand(1500) * M).long()
+    test_data = torch.sparse.torch.eye(M).index_select(dim=0, index=test_labels)
 
     optimizer = optim.Adam(model.parameters())
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=8, gamma=0.1)
@@ -138,8 +139,8 @@ if __name__ == "__main__":
 
     print('Finished Training')
 
-    class_correct = list(0. for i in range(CHANNEL_SIZE))
-    class_total = list(0. for i in range(CHANNEL_SIZE))
+    class_correct = list(0. for i in range(M))
+    class_total = list(0. for i in range(M))
     with torch.no_grad():
         for data in testloader:
             # print(data.shape)
@@ -161,6 +162,6 @@ if __name__ == "__main__":
                 if c[i].item() != True:
                     print(label, predicted[i])
 
-    for i in range(CHANNEL_SIZE):
+    for i in range(M):
         print('Accuracy of %5s : %2d %2d ' % (
             i, class_correct[i], class_total[i]))
